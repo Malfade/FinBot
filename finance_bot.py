@@ -2,6 +2,7 @@ import os
 import sqlite3
 import logging
 from datetime import datetime
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -12,6 +13,7 @@ from aiogram.types.reply_keyboard_remove import ReplyKeyboardRemove
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+load_dotenv()
 # Load Bot Token from environment variable (recommended)
 API_TOKEN = os.getenv('API_TOKEN', 'ваш_резервный_токен')
 
