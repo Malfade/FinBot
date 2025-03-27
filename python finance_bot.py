@@ -2,24 +2,22 @@ import os
 import sqlite3
 import logging
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils import executor
+from aiogram import Bot, Dispatcher, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, Message
+from aiogram.types.reply_keyboard_remove import ReplyKeyboardRemove
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load Bot Token from environment variable (recommended)
-API_TOKEN = os.getenv('@Finhps_bot', '7565373869:AAGi-pip0HX5mDNSE5427PR3Q5OhQYwLnz8')
+API_TOKEN = os.getenv('API_TOKEN', 'ваш_резервный_токен')
 
-# Initialize bot and storage
+# Initialize bot and Dispatcher
 bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher()
 
 # Database connection
 class Database:
@@ -81,26 +79,31 @@ class Database:
 # State machine for handling transaction input
 class TransactionStates(StatesGroup):
     waiting_for_transaction = State()
+    transaction_type = State()
 
 # Initialize database
 db = Database()
 
 # Keyboard setup
 def create_keyboard():
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(
-        KeyboardButton("📈 Добавить доход"), 
-        KeyboardButton("📉 Добавить расход")
-    )
-    keyboard.add(
-        KeyboardButton("💰 Баланс"), 
-        KeyboardButton("📊 Статистика")
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📈 Добавить доход"),
+                KeyboardButton(text="📉 Добавить расход")
+            ],
+            [
+                KeyboardButton(text="💰 Баланс"),
+                KeyboardButton(text="📊 Статистика")
+            ]
+        ],
+        resize_keyboard=True
     )
     return keyboard
 
 # Start command handler
-@dp.message_handler(commands=['start'])
-async def start_command(message: types.Message):
+@dp.message(F.text == "/start")
+async def start_command(message: Message):
     await message.answer(
         "👋 Привет! Я твой личный финансовый помощник. \n\n"
         "Используй кнопки внизу для управления финансами:\n"
@@ -112,20 +115,22 @@ async def start_command(message: types.Message):
     )
 
 # Income handler
-@dp.message_handler(lambda message: message.text == "📈 Добавить доход")
-async def add_income(message: types.Message):
+@dp.message(F.text == "📈 Добавить доход")
+async def add_income(message: Message, state: FSMContext):
+    await state.set_state(TransactionStates.waiting_for_transaction)
+    await state.update_data(transaction_type="income")
     await message.answer("💸 Введите сумму дохода и категорию (например: 50000 зарплата)")
-    await TransactionStates.waiting_for_transaction.set()
 
 # Expense handler
-@dp.message_handler(lambda message: message.text == "📉 Добавить расход")
-async def add_expense(message: types.Message):
+@dp.message(F.text == "📉 Добавить расход")
+async def add_expense(message: Message, state: FSMContext):
+    await state.set_state(TransactionStates.waiting_for_transaction)
+    await state.update_data(transaction_type="expense")
     await message.answer("💳 Введите сумму расхода и категорию (например: 1500 еда)")
-    await TransactionStates.waiting_for_transaction.set()
 
 # Balance handler
-@dp.message_handler(lambda message: message.text == "💰 Баланс")
-async def get_balance(message: types.Message):
+@dp.message(F.text == "💰 Баланс")
+async def get_balance(message: Message):
     total_income, total_expense = db.get_balance(message.from_user.id)
     balance = total_income - total_expense
     
@@ -137,8 +142,8 @@ async def get_balance(message: types.Message):
     )
 
 # Monthly statistics handler
-@dp.message_handler(lambda message: message.text == "📊 Статистика")
-async def get_statistics(message: types.Message):
+@dp.message(F.text == "📊 Статистика")
+async def get_statistics(message: Message):
     stats = db.get_monthly_stats(message.from_user.id)
     
     if not stats:
@@ -152,8 +157,8 @@ async def get_statistics(message: types.Message):
     await message.answer(response)
 
 # Transaction processing
-@dp.message_handler(state=TransactionStates.waiting_for_transaction)
-async def process_transaction(message: types.Message, state: FSMContext):
+@dp.message(TransactionStates.waiting_for_transaction)
+async def process_transaction(message: Message, state: FSMContext):
     user_id = message.from_user.id
     data = message.text.split(" ", 1)
     
@@ -171,17 +176,18 @@ async def process_transaction(message: types.Message, state: FSMContext):
             await message.answer("❌ Сумма должна быть положительной.")
             return
         
-        # Determine transaction type based on previous message
-        transaction_type = "income" if "📈" in (await state.get_data()).get('last_button', '') else "expense"
+        # Get transaction type from state data
+        state_data = await state.get_data()
+        transaction_type = state_data.get('transaction_type', 'expense')
         
         # Add transaction to database
         if db.add_transaction(user_id, transaction_type, amount, category):
-            await message.answer("✅ Запись успешно добавлена!")
+            await message.answer("✅ Запись успешно добавлена!", reply_markup=create_keyboard())
         else:
             await message.answer("❌ Не удалось сохранить транзакцию. Попробуйте снова.")
         
         # Reset state
-        await state.finish()
+        await state.clear()
     
     except ValueError:
         await message.answer("❌ Ошибка! Сумма должна быть числом.")
@@ -190,17 +196,19 @@ async def process_transaction(message: types.Message, state: FSMContext):
         await message.answer("Произошла непредвиденная ошибка. Попробуйте снова.")
 
 # Prevent unknown messages from breaking the flow
-@dp.message_handler()
-async def handle_unknown(message: types.Message):
+@dp.message()
+async def handle_unknown(message: Message):
     await message.answer("❓ Я не понял вашу команду. Используйте кнопки меню.")
 
-def main():
+async def main():
     try:
-        executor.start_polling(dp, skip_updates=True)
+        await dp.start_polling(bot)
     except Exception as e:
         logger.error(f"Bot initialization error: {e}")
     finally:
+        await bot.session.close()
         db.close()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
